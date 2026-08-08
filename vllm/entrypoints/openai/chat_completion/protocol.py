@@ -471,6 +471,19 @@ class ChatCompletionRequest(OpenAIBaseModel):
         ),
     )
 
+    context_compression: Literal["ace"] | None = Field(
+        default=None,
+        description=(
+            "Apply ACE input-layer context compression to this request: repack "
+            "the chat history to fit the model's prompt budget by retrieval "
+            "against the last user message, instead of truncating the tail. "
+            "Omissions are left visibly marked. Set to 'ace' to enable for one "
+            "request; use --enable-ace-context-compression to enable it "
+            "server-wide. Off by default, and when off the prompt is "
+            "byte-identical to the uncompressed one."
+        ),
+    )
+
     kv_transfer_params: dict[str, Any] | None = Field(
         default=None,
         description="KVTransfer parameters used for disaggregated serving.",

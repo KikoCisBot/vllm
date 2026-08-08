@@ -169,6 +169,24 @@ class BaseFrontendArgs:
     priority."""
     log_error_stack: bool = envs.VLLM_SERVER_DEV_MODE
     """If set to True, log the stack trace of error responses"""
+    enable_ace_context_compression: bool = False
+    """Enable ACE input-layer context compression on `/v1/chat/completions`.
+
+    Before templating and prefill, the chat history is repacked to fit a token
+    budget by retrieval -- real BM25 with IDF computed over the conversation
+    itself, scored against the last user message -- rather than by truncating
+    the tail. Omissions are left visibly marked in the text. System and
+    developer turns are never compressed or dropped, and tool results are never
+    dropped (they collapse to a marker) so tool-call pairing survives.
+
+    Off by default; when off the request is untouched."""
+    ace_context_compression_budget_tokens: int | None = None
+    """Prompt-token budget for `--enable-ace-context-compression`.
+
+    Defaults to `max_model_len` minus the request's output reservation, i.e.
+    compress only enough to make the request fit. Set a smaller value to
+    compress harder: on LoCoMo, retrieving into ~8% of the tokens scored above
+    sending the full context."""
     tokens_only: bool = False
     """
     If set to True, only enable the Tokens In<>Out endpoint.

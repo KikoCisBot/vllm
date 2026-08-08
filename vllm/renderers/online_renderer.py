@@ -11,6 +11,10 @@ from vllm.entrypoints.chat_utils import (
     ChatTemplateContentFormatOption,
     ConversationMessage,
 )
+from vllm.entrypoints.context_compression import (
+    AceCompressionConfig,
+    maybe_compress_chat_messages,
+)
 from vllm.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionNamedToolChoiceParam,
     ChatCompletionRequest,
@@ -76,10 +80,18 @@ class OnlineRenderer:
         reasoning_parser: str | None = None,
         default_chat_template_kwargs: dict[str, Any] | None = None,
         log_error_stack: bool = False,
+        enable_ace_context_compression: bool = False,
+        ace_context_compression_budget_tokens: int | None = None,
     ) -> None:
         self.model_config = model_config
         self.renderer = renderer
         self.request_logger = request_logger
+
+        self.enable_ace_context_compression = enable_ace_context_compression
+        self.ace_context_compression_budget_tokens = (
+            ace_context_compression_budget_tokens
+        )
+        self.ace_compression_config = AceCompressionConfig()
 
         self.enable_auto_tools = enable_auto_tools
         self.exclude_tools_when_tool_choice_none = exclude_tools_when_tool_choice_none
@@ -113,6 +125,39 @@ class OnlineRenderer:
                 chat_template_kwargs=self.default_chat_template_kwargs,
             )
         )
+
+    def _maybe_compress_chat_history(self, request: ChatCompletionRequest) -> list[Any]:
+        """Apply ACE input-layer context compression, if it is switched on.
+
+        Enabled by the server flag ``--enable-ace-context-compression`` or,
+        per request, by ``"context_compression": "ace"``. With neither set this
+        returns the request's own message objects untouched, so a server
+        started without the flag produces byte-identical prompts.
+        """
+        messages = list(request.messages)
+        enabled = (
+            self.enable_ace_context_compression
+            or getattr(request, "context_compression", None) == "ace"
+        )
+        if not enabled:
+            return messages
+
+        max_model_len = self.model_config.max_model_len
+        reserved = (
+            getattr(request, "max_completion_tokens", None)
+            or getattr(request, "max_tokens", None)
+            or max(256, max_model_len // 8)  # reserve 1/8 for the answer
+        )
+        compressed, _stats = maybe_compress_chat_messages(
+            messages,
+            enabled=True,
+            tokenizer=self.renderer.tokenizer,
+            max_model_len=max_model_len,
+            reserved_output_tokens=reserved,
+            budget_tokens=self.ace_context_compression_budget_tokens,
+            config=self.ace_compression_config,
+        )
+        return compressed
 
     async def render_chat(
         self,
@@ -179,6 +224,11 @@ class OnlineRenderer:
         else:
             tool_dicts = [tool.model_dump() for tool in request.tools]
 
+        # ACE input-layer context compression, applied before the harmony /
+        # non-harmony split so both templating paths see the same history.
+        # A no-op (same message objects) unless the feature is switched on.
+        messages = self._maybe_compress_chat_history(request)
+
         if not self.use_harmony:
             # Common case.
             error_check_ret = self.validate_chat_template(
@@ -191,7 +241,7 @@ class OnlineRenderer:
 
             conversation, engine_inputs = await self.preprocess_chat(
                 request,
-                request.messages,
+                messages,
                 default_template=self.chat_template,
                 default_template_content_format=self.chat_template_content_format,
                 default_template_kwargs=self.default_chat_template_kwargs,
@@ -212,7 +262,7 @@ class OnlineRenderer:
 
             should_include_tools = tool_dicts is not None
             conversation, engine_inputs = self._make_request_with_harmony(
-                request, should_include_tools
+                request, should_include_tools, compressed_messages=messages
             )
 
         return conversation, engine_inputs
@@ -221,6 +271,7 @@ class OnlineRenderer:
         self,
         request: ChatCompletionRequest,
         should_include_tools: bool = True,
+        compressed_messages: list[Any] | None = None,
     ):
         """Build Harmony (GPT-OSS) messages and engine prompt from a chat request."""
         reuse_ids = _reused_prompt_token_ids(request)
@@ -237,7 +288,11 @@ class OnlineRenderer:
         # for more info: see comment in `maybe_serialize_tool_calls`
         _mt.maybe_serialize_tool_calls(request)  # type: ignore[arg-type]
 
-        chat_messages = list(request.messages)
+        # Use the ACE-compressed messages when the caller provided them.
+        raw_messages = (
+            compressed_messages if compressed_messages is not None else request.messages
+        )
+        chat_messages = list(raw_messages)
         instructions, chat_messages = extract_instructions_from_messages(chat_messages)
 
         # Add system message.

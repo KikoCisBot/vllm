@@ -425,6 +425,12 @@ async def init_app_state(
         reasoning_parser=args.structured_outputs_config.reasoning_parser,
         default_chat_template_kwargs=args.default_chat_template_kwargs,
         log_error_stack=args.log_error_stack,
+        enable_ace_context_compression=getattr(
+            args, "enable_ace_context_compression", False
+        ),
+        ace_context_compression_budget_tokens=getattr(
+            args, "ace_context_compression_budget_tokens", None
+        ),
     )
     state.online_renderer.warmup()
 
@@ -529,6 +535,12 @@ async def init_render_app_state(
         reasoning_parser=args.reasoning_parser,
         default_chat_template_kwargs=args.default_chat_template_kwargs,
         log_error_stack=args.log_error_stack,
+        enable_ace_context_compression=getattr(
+            args, "enable_ace_context_compression", False
+        ),
+        ace_context_compression_budget_tokens=getattr(
+            args, "ace_context_compression_budget_tokens", None
+        ),
     )
     state.online_renderer.warmup()
 
